@@ -17,22 +17,42 @@ import Pux.DOM.Events (onClick, DOMEvent, onChange, targetValue)
 import Pux.DOM.HTML (HTML)
 import DOM (DOM)
 import Pux.Renderer.React (renderToDOM)
-import Text.Smolder.HTML (button, div, span, input, pre)
-import Text.Smolder.HTML.Attributes (value)
-import Text.Smolder.Markup (text, (#!))--, (!))
+import Text.Smolder.HTML (button, div, span, input, pre, p)
+import Text.Smolder.HTML.Attributes (value, type')
+import Text.Smolder.Markup (text, (#!), (!))
 import Signal.Channel (CHANNEL)
 
-data Event = Toggle Scorp
+data Event = Push
+	   | InputChange DOMEvent
+	   | Toggle Scorp
 
-type State = Bloop
+type State = { inp :: String, now :: Bloop }
 
 type Scorp = { mx :: String, info :: List String, expand :: Boolean }
 type Bloop = { query :: String, results :: List Scorp }
 
-foodat :: Bloop
-foodat = { query: "xyzzy.soy", results: ({ mx: "mail.xyzzy.soy", info: ("10.0.0.10":Nil), expand: false }:Nil) }
+resolve :: String -> Bloop
+resolve x = resolve' x samples
+  where
+    resolve' x (s:rest) | x == s.query = s
+                        | otherwise = resolve' x rest
+    resolve' x (Nil) = noSuch
 
-toggle :: State -> Scorp -> State
+noSuch :: Bloop
+noSuch = { query: "this is not a domain...", results : Nil }
+
+samples :: List Bloop
+samples = querify "xyzzy.soy" 10 : querify "yargle.blarg" 20 : querify "dane.sys4.de" 77 : Nil
+
+foodat :: Bloop
+foodat = querify "xyzzy.soy" 10
+
+querify :: String -> Int -> Bloop
+querify q ip =
+  let i = show ip
+   in { query: q, results :({ mx: ("mail."<>q), info: ((i<>".0.0."<>i):Nil), expand: false}:Nil) }
+
+toggle :: Bloop -> Scorp -> Bloop
 toggle s sco = s { results = unsafePartial $ toggle' sco s.results }
   where
     toggle' :: Partial => Scorp -> List Scorp -> List Scorp
@@ -40,12 +60,21 @@ toggle s sco = s { results = unsafePartial $ toggle' sco s.results }
       | x.mx == sco.mx = (sco { expand = not sco.expand }):xs
       | otherwise = x : toggle' sco xs
 
+
+expandCollapse :: Scorp -> HTML Event
+expandCollapse sco = do
+    button #! onClick (const $ Toggle sco) $ text (excolText sco.expand)
+  where
+    excolText true = "◀︎"
+    excolText false = "▶︎"
+
 viewScorp :: Scorp -> HTML Event
 viewScorp scorp = 
   div $ do
-    span $ text scorp.mx
     div $ do
-      button #! onClick (const $ Toggle scorp) $ text (if scorp.expand then "Collapse" else "Expand")
+      p $ do
+        expandCollapse scorp
+        span $ text scorp.mx
       if scorp.expand 
         then 
           pre $ void $ traverse (\x -> span $ text x) scorp.info
@@ -54,14 +83,18 @@ viewScorp scorp =
 
 
 view :: State -> HTML Event
-view bloop =
+view stat =
   div $ do
-    span $ text bloop.query
-    void $ traverse viewScorp bloop.results
+    div $ do
+      input ! type' "text" ! value stat.inp #! onChange InputChange
+      button #! onClick (const $ Push) $ text "Go"
+    div $ do
+      span $ text stat.now.query
+      void $ traverse viewScorp stat.now.results
 
 
 init :: State
-init = foodat
+init = { inp: "", now: noSuch }
 
 {-
 announce :: forall f. String -> Eff (console :: CONSOLE, channel :: CHANNEL, exception :: EXCEPTION | f) Unit
@@ -70,7 +103,9 @@ announce = log
 
 
 foldp :: forall fx. Event -> State -> EffModel State Event (dom :: DOM | fx)
-foldp (Toggle sco) st = noEffects $ toggle st sco
+foldp (InputChange ev) st = noEffects $ st { inp = targetValue ev }
+foldp (Push) st = noEffects $ st { now = resolve st.inp }
+foldp (Toggle sco) st = noEffects $ st { now = toggle st.now sco }
 
 {-
 view :: State -> HTML Event
