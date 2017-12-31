@@ -23,8 +23,8 @@ import Text.Smolder.Markup (text, (#!), (!))
 import Signal.Channel (CHANNEL)
 
 data Event = Push
-	   | InputChange DOMEvent
-	   | Toggle Scorp
+           | InputChange DOMEvent
+           | Toggle Scorp
 
 type State = { inp :: String, now :: Bloop }
 
@@ -69,14 +69,14 @@ expandCollapse sco = do
     excolText false = "▶︎"
 
 viewScorp :: Scorp -> HTML Event
-viewScorp scorp = 
+viewScorp scorp =
   div $ do
     div $ do
       p $ do
         expandCollapse scorp
         span $ text scorp.mx
-      if scorp.expand 
-        then 
+      if scorp.expand
+        then
           pre $ void $ traverse (\x -> span $ text x) scorp.info
         else
           pure unit
