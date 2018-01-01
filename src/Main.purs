@@ -43,7 +43,7 @@ import Pux.DOM.HTML (HTML)
 import Pux.Renderer.React (renderToDOM)
 
 import Text.Smolder.HTML hiding (map)
-import Text.Smolder.HTML.Attributes hiding (span, form)
+import Text.Smolder.HTML.Attributes hiding (span, form, id)
 import Text.Smolder.Markup
 
 import Signal.Channel (CHANNEL)
@@ -167,9 +167,9 @@ viewResponse (Just ans) = do
 view :: State -> HTML Event
 view stat =
   div $ do
-    form ! name "search" #! onSubmit (const Submit) $ do
+    div $ do
       input ! type' "text" ! value stat.inp #! onChange InputChange
-      button ! type' "submit" $ text "Go"
+      button ! type' "submit" #! onClick (const Submit) $ text "Go"
     pre $ void $ traverse (\x -> span $ text x) stat.err
     div $ viewResponse stat.resp
 
