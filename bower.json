@@ -13,7 +13,10 @@
     "purescript-signal": "^9.0.0",
     "purescript-smolder": "^10.2.0",
     "purescript-affjax": "^5.0.0",
-    "purescript-argonaut": "^3.1.0"
+    "purescript-argonaut": "^3.1.0",
+    "purescript-generics-rep": "^5.4.0",
+    "purescript-lens": "^3.0.0",
+    "purescript-foreign-generic": "^5.0.0"
   },
   "devDependencies": {
     "purescript-psci-support": "^3.0.0"
