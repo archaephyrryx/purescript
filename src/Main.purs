@@ -60,7 +60,7 @@ data Event = Submit
 type State = { inp :: String, resp :: Response, err :: List String }
 
 type Response = Maybe Answer
-type RawResponse = Maybe RawAnswer
+type RawResponse = RawAnswer
 
 newtype Answer = Answer { query :: String, results :: Array Detail }
 newtype Detail = Detail { mx :: String, info :: Array String, expand :: Boolean }
@@ -122,7 +122,7 @@ resolve :: forall fx. String -> Aff (ajax :: AJAX | CoreEffects fx) (Maybe Event
 resolve q = do
   res <- attempt $ get (serverUrl <> q)
   let decode r = runExcept (genericDecodeJSON opts r.response) :: Either (NonEmptyList ForeignError) RawResponse
-  let copy = either (Left <<< one <<< show) (bimap (toList <<< map renderForeignError) (map annotate) <<< decode) res
+  let copy = either (Left <<< one <<< show) (bimap (toList <<< map renderForeignError) (Just <<< annotate) <<< decode) res
   pure $ Just $ Remote $ copy
 
 similar :: forall a b. Eq b => (a -> b) -> a -> a -> Boolean
@@ -159,7 +159,7 @@ viewDetail det =
           pure unit
 
 viewResponse :: Response -> HTML Event
-viewResponse Nothing = span $ text "No domains matching query."
+viewResponse Nothing = span $ text "Enter a domain to retrieve results for."
 viewResponse (Just ans) = do
   span $ text $ ans ^. _Answer..query
   void $ traverse viewDetail $ ans ^. _Answer..results
