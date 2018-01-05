@@ -1,12 +1,11 @@
 module Main where
 
-import Prelude hiding (div)
+import Prelude hiding (div, one)
 
 import Control.Applicative
 import Control.Bind
 import Control.Monad.Aff
 import Control.Monad.Eff.Class (liftEff)
-import Control.Monad.Eff.Console
 import Control.Monad.Eff (Eff)
 import Control.Monad.Eff.Exception (EXCEPTION)
 import Control.Monad.Except
@@ -49,6 +48,8 @@ import Text.Smolder.Markup
 import Signal.Channel (CHANNEL)
 
 import Url (serverUrl)
+import Comms
+import Model
 
 data Event = Submit
            | InputChange DOMEvent
@@ -59,74 +60,14 @@ data Event = Submit
 
 type State = { inp :: String, resp :: Response, err :: List String }
 
-type Response = Maybe Answer
-type RawResponse = RawAnswer
-
-newtype Answer = Answer { query :: String, results :: Array Detail }
-newtype Detail = Detail { mx :: String, info :: Array String, expand :: Boolean }
-
-_Answer :: Lens' Answer { query :: String, results :: Array Detail }
-_Answer = lens (\(Answer x) -> x) (const Answer)
-
-_Detail :: Lens' Detail { mx :: String, info :: Array String, expand :: Boolean } 
-_Detail = lens (\(Detail x) -> x) (const Detail)
-
-query :: Lens' { query :: String, results :: Array Detail } String
-query = lens _.query (_ { query = _ })
-
-results :: Lens' { query :: String, results :: Array Detail } (Array Detail)
-results = lens _.results (_ { results = _ })
-
-mx :: Lens' { mx :: String, info :: Array String, expand :: Boolean } String
-mx = lens _.mx (_ { mx = _ })
-
-info :: Lens' { mx :: String, info :: Array String, expand :: Boolean } (Array String)
-info = lens _.info (_ { info = _ })
-
-expand :: Lens' { mx :: String, info :: Array String, expand :: Boolean } Boolean
-expand = lens _.expand (_ { expand = _ })
-
-newtype RawAnswer = RawAnswer { query :: String, results :: Array RawDetail }
-newtype RawDetail = RawDetail { mx :: String, info :: Array String }
-
-derive instance genericDetail    :: Generic Detail    _
-derive instance genericRawDetail :: Generic RawDetail _
-derive instance genericAnswer    :: Generic Answer    _
-derive instance genericRawAnswer :: Generic RawAnswer _
-
-opts = defaultOptions { unwrapSingleConstructors = true }
-
-instance decodeRawAnswer :: Decode RawAnswer where
-  decode = genericDecode opts
-instance decodeRawDetail :: Decode RawDetail where
-  decode = genericDecode opts
-
-noAnswer :: Response
-noAnswer = Nothing
-
 init :: State
 init = { inp: "", resp: noAnswer, err: Nil }
-
-annotate :: RawAnswer -> Answer
-annotate (RawAnswer { query, results }) = Answer { query: query, results: tag <$> results }
-  where
-    tag :: RawDetail -> Detail
-    tag (RawDetail { mx, info }) = Detail { mx: mx, info: info, expand: false }
-
-
-
-one :: forall a. a -> List a
-one x = x:Nil
 
 resolve :: forall fx. String -> Aff (ajax :: AJAX | CoreEffects fx) (Maybe Event)
 resolve q = do
   res <- attempt $ get (serverUrl <> q)
-  let decode r = runExcept (genericDecodeJSON opts r.response) :: Either (NonEmptyList ForeignError) RawResponse
-  let copy = either (Left <<< one <<< show) (bimap (toList <<< map renderForeignError) (Just <<< annotate) <<< decode) res
+  let copy = either (Left <<< one <<< show) (orError (Just <<< annotate) <<< parseJSON) res
   pure $ Just $ Remote $ copy
-
-similar :: forall a b. Eq b => (a -> b) -> a -> a -> Boolean
-similar f x y = f x == f y
 
 toggle :: Detail -> Answer -> Answer
 toggle det ans = ans # _Answer..results %~ safeToggle det
