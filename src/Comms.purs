@@ -19,6 +19,7 @@ import Data.Generic.Rep
 import Data.List as L
 import Data.List.NonEmpty (toList, NonEmptyList)
 import Data.Maybe
+import Data.Tuple
 
 import Optic.Core hiding (div, view)
 import Optic.Lens
@@ -26,7 +27,7 @@ import Optic.Lens
 import Data.Argonaut
 
 type RawResponse = RawAnswer
-newtype RawAnswer = RawAnswer { query :: String, results :: Array RawDetail }
+newtype RawAnswer = RawAnswer { query :: String, results :: Array RawDetail } -- (Tuple Int String)  }
 newtype RawDetail = RawDetail { mx :: String, info :: Array String }
 
 derive instance genericRawDetail :: Generic RawDetail _

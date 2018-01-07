@@ -7,6 +7,7 @@ import Control.Bind
 import Control.Monad.Aff
 import Control.Monad.Eff.Class (liftEff)
 import Control.Monad.Eff (Eff)
+import Control.Monad.Eff.Ref (newRef, Ref, REF, readRef, writeRef)
 import Control.Monad.Eff.Exception (EXCEPTION)
 import Control.Monad.Except
 
@@ -51,23 +52,45 @@ import Url (serverUrl)
 import Comms
 import Model
 
+type AppEffects = (ajax :: AJAX, ref :: REF, dom :: DOM)
+
 data Event = Submit
+           | Cancel
+           | Cancelled
            | InputChange DOMEvent
            | Toggle Detail
            | Remote (Either (List String) Response)
            | Error (List String)
+           | Await String
            | Update Response
 
-type State = { inp :: String, resp :: Response, err :: List String }
+type Trigger = Fiber (CoreEffects AppEffects) (Maybe Event)
 
-init :: State
-init = { inp: "", resp: noAnswer, err: Nil }
+type State = { inp :: String, resp :: Response, waiting :: Boolean, err :: List String, trigger :: Ref (Maybe Trigger) }
 
-resolve :: forall fx. String -> Aff (ajax :: AJAX | CoreEffects fx) (Maybe Event)
-resolve q = do
+init :: (Ref (Maybe Trigger)) -> State
+init trig = { inp: "", resp: noAnswer, waiting: false, err: Nil, trigger: trig }
+
+cancel :: Ref (Maybe Trigger) -> Aff (CoreEffects AppEffects) Unit
+cancel trig =
+  liftEff (readRef trig) >>= maybe (pure unit) (killFiber (error "late"))
+
+clearRef :: forall x fx. Ref (Maybe x) -> Eff (ref :: REF | fx) Unit
+clearRef ref = writeRef ref Nothing
+
+resolve' :: String -> Aff (CoreEffects AppEffects) (Maybe Event)
+resolve' q = do
   res <- attempt $ get (serverUrl <> q)
   let copy = either (Left <<< one <<< show) (orError (Just <<< annotate) <<< parseJSON) res
   pure $ Just $ Remote $ copy
+
+resolve :: String -> Ref (Maybe Trigger) -> Aff (CoreEffects AppEffects) (Maybe Event)
+resolve q trig = do
+  fib <- forkAff $ resolve' q
+  liftEff $ writeRef trig (Just fib)
+  res <- try (joinFiber fib)
+  pure $ either (const Nothing) id res
+
 
 toggle :: Detail -> Answer -> Answer
 toggle det ans = ans # _Answer..results %~ safeToggle det
@@ -77,7 +100,7 @@ toggle det ans = ans # _Answer..results %~ safeToggle det
     toggle' :: Partial => Detail -> Array Detail -> Array Detail
     toggle' det dets = case uncons dets of
       Just { head: x, tail: xs } | similar (\x -> x ^. _Detail..mx) x det -> A.cons (det # _Detail..expand %~ not) xs
-                                 | otherwise                          -> A.cons x $ toggle' det xs
+                                 | otherwise                              -> A.cons x $ toggle' det xs
 
 expandCollapse :: Detail -> HTML Event
 expandCollapse det = do
@@ -111,23 +134,36 @@ view stat =
     div $ do
       input ! type' "text" ! value stat.inp #! onChange InputChange
       button ! type' "submit" #! onClick (const Submit) $ text "Go"
+      button #! onClick (const Cancel) $ text "Cancel"
     pre $ void $ traverse (\x -> span $ text x) stat.err
-    div $ viewResponse stat.resp
+    if stat.waiting
+      then do
+        span $ text $ "Retrieving results for domain "<>stat.inp<>" (please wait...)"
+        span $ text "(If nothing changes the page isn't necessarily frozen)"
+      else
+        div $ viewResponse stat.resp
 
-foldp :: forall fx. Event -> State -> EffModel State Event (dom :: DOM, ajax :: AJAX | fx)
+waitOn :: State -> Aff (CoreEffects AppEffects) (Maybe Event)
+waitOn st = pure $ Just $ Await st.inp
+
+foldp :: Event -> State -> EffModel State Event (AppEffects)
 foldp (InputChange ev) st = noEffects $ st { inp = targetValue ev }
-foldp Submit st = onlyEffects st $ [ resolve st.inp ]
+foldp Submit st = onlyEffects st $ [ pure $ Just $ Cancel, resolve st.inp st.trigger, waitOn st ]
+foldp Cancel st = onlyEffects st $ [ cancel st.trigger *> pure Nothing, liftEff (clearRef st.trigger) *> pure Nothing, pure $ Just $ Cancelled ]
+foldp Cancelled st = noEffects $ st { waiting = false }
 foldp (Toggle det) st = noEffects $ st { resp = toggle det <$> st.resp }
 foldp (Remote (Left strs)) st = onlyEffects st $ [ pure $ Just $ Error strs ]
-foldp (Remote (Right resp)) st = onlyEffects st $ [ pure $ Just $ Update resp ]
-foldp (Error strs) st = noEffects $ st { err = strs<>st.err }
+foldp (Remote (Right resp)) st = onlyEffects st $ [ pure $ Just $ Update resp, liftEff (clearRef st.trigger) *> pure Nothing ]
+foldp (Error strs) st = noEffects $ st { err = strs<>st.err, waiting = false }
+foldp (Await str) st = noEffects $ st { waiting = true }
 foldp (Update resp) st = noEffects $ update resp st
   where
-    update resp st = st { resp = resp, err = Nil }
+    update resp st = st { resp = resp, waiting = false, err = Nil }
 
-main :: forall fx. Eff (ajax :: AJAX, dom :: DOM | CoreEffects fx) Unit
+main :: Eff (CoreEffects AppEffects) Unit
 main = do
-  app <- start { initialState: init
+  initRef <- newRef Nothing
+  app <- start { initialState: init initRef
                , view
                , foldp
                , inputs: []
