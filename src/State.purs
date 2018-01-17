@@ -24,17 +24,17 @@ type State =
   , queue :: List String
   , waiting :: Boolean
   , err :: List String
-  , trigger :: Ref (Maybe Trigger)
+  , process :: Ref (Maybe Process)
   }
 
-init :: (Ref (Maybe Trigger)) -> State
-init trig =
+init :: (Ref (Maybe Process)) -> State
+init proc =
   { inp: ""
   , resp: noAnswer
   , queue: Nil
   , waiting: false
   , err: Nil
-  , trigger: trig
+  , process: proc
   }
 
 domainName :: State -> String

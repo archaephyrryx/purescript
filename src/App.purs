@@ -10,6 +10,9 @@ import DOM (DOM)
 import Pux (CoreEffects)
 import Event
 
+
+--| Type alias for the set of all side-effects of the application's components
 type AppEffects = (ajax :: AJAX, ref :: REF, dom :: DOM)
 
-type Trigger = Fiber (CoreEffects AppEffects) (Maybe Event)
+--| Type alias for fibers representing forked Aff monad calls
+type Process = Fiber (CoreEffects AppEffects) (Maybe Event)

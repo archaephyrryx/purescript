@@ -27,101 +27,93 @@ import State
 import UI
 import Url (serverUrl)
 
-cancel :: Ref (Maybe Trigger) -> Aff (CoreEffects AppEffects) Unit
-cancel trig =
-  liftEff (readRef trig) >>= maybe (pure unit) (killFiber (error "late"))
+-- | Kill any fiber currently stored in the trigger-latch, without modifying the latch's contents
+cancel :: Ref (Maybe Process) -> Aff (CoreEffects AppEffects) Unit
+cancel proc =
+  liftEff (readRef proc) >>= maybe (pure unit) (killFiber (error "late"))
 
+-- | Reset the contents of the trigger-latch, discarding any reference to a fiber that might be stored in it (alive or dead)
 clearRef :: forall x fx. Ref (Maybe x) -> Eff (ref :: REF | fx) Unit
 clearRef ref = writeRef ref Nothing
 
+-- | Perform a string-argumented query operation in the background, storing a reference in the trigger latch, firing the event it returns if it completed execution and doing nothing if it was terminated
 resolve :: (String -> Aff (CoreEffects AppEffects) (Maybe Event))
         -> String
-        -> Ref (Maybe Trigger)
+        -> Ref (Maybe Process)
         -> Aff (CoreEffects AppEffects) (Maybe Event)
-resolve f q trig = do
+resolve f q proc = do
   fib <- forkAff $ f q
-  liftEff $ writeRef trig (Just fib)
+  liftEff $ writeRef proc (Just fib)
   res <- try (joinFiber fib)
   pure $ either (const Nothing) id res
 
+-- | String-argumented query operation for retrieving details specific to the indicated domain name
 getHost :: String
         -> Aff (CoreEffects AppEffects) (Maybe Event)
 getHost q = do
   res <- attempt $ get (serverUrl <> q)
   let copy = either (Left <<< one <<< show) (orError (Just <<< annotate) <<< parseJSON) res
-  pure $ Just $ Inbound $ Remote copy
+  pure $ Just $ Inbound $ ReDomain copy
 
+-- | Generator for a string-argumented query operation that takes a domain-name to report to the server, and returns a function on an MX hostname argument to be provided
 getMX :: String
       -> String
       -> Aff (CoreEffects AppEffects) (Maybe Event)
 getMX dom q = do
   res <- attempt $ get (serverUrl <> dom <> "/" <> q)
   let copy = either (Left <<< one <<< show) (orError id <<< parseJSON) res
-  pure $ Just $ Inbound $ FollowUp copy
+  pure $ Just $ Inbound $ ReMxHost copy
 
-{-
- - this function is used to update the state to indicate that the
- - results for a given mx host (the string argument) are being listened
- - for, but is currently a no-op because our model does not have any kind
- - of indicator for this state currently. XXX Make this do something at
- - some point
- -}
+--| State update indicating that a particular MX host's details are currently in the process of being retrieved, implemented temporarily as a no-op
 listen :: State -> String -> State
 listen = const
 
+--| In reponse to the receival of an MX host's information, remove it from the query-queue and trigger a query for the next unresolved host, if any remain
 repester :: State
          -> RawDetail
          -> Aff (CoreEffects AppEffects) (Maybe Event)
 repester stat rawd =
   let rem = complete rawd stat.queue
-   in pure $ (Reflex <<< Pester <<< _.head) <$> L.uncons rem
+   in pure $ (Outbound <<< MXHostQuery <<< _.head) <$> L.uncons rem
 
+--| Non-event-producing effect for terminating the extant XMLHTTP request fiber
 kill :: State -> Aff (CoreEffects AppEffects) (Maybe Event)
-kill st = cancel st.trigger *> pure Nothing
+kill st = cancel st.process *> pure Nothing
 
+--| Non-event-producing effect for clearing the request fiber latch
 dropRef :: State -> Aff (CoreEffects AppEffects) (Maybe Event)
-dropRef st = liftEff (clearRef st.trigger) *> pure Nothing
+dropRef st = liftEff (clearRef st.process) *> pure Nothing
 
+-- | Accumulator function for folding event-timelines into state updates and reactions
 foldp :: Event -> State -> EffModel State Event (AppEffects)
 foldp (UI x) st = case x of
-    Submit -> onlyEffects st [ pure $ Just $ Reflex Clear ]
-    Cancel -> onlyEffects st [ kill st
-                             , dropRef st
-                             , pure $ Just $ Resolve Cancelled
+    Submit -> onlyEffects st [ pure $ Just $ Pending $ DomainWait st.inp
+                             , pure $ Just $ Outbound $ DomainQuery st.inp
                              ]
+    Cancel -> onlyEffects st [ kill st *> dropRef st *> (pure $ Just $ Resolve Cancelled) ]
     InputChange ev -> noEffects $ st { inp = targetValue ev }
     Toggle det     -> noEffects $ st { resp = toggle det <$> st.resp }
-foldp (Reflex x) st = case x of
-    Clear -> onlyEffects st [ kill st
-                            , dropRef st
-                            , pure $ Just $ Resolve Cleared
-                            ]
-
-    Pester str -> onlyEffects st [ resolve (getMX $ domainName st) str st.trigger
-                                 , pure $ Just $ Anticipation $ Listening str
-                                 ]
+foldp (Outbound x) st = case x of
+    DomainQuery str -> onlyEffects st [ kill st *> dropRef st *> resolve getHost str st.process ]
+    MXHostQuery str -> onlyEffects st [ pure $ Just $ Pending $ MXHostWait str
+                                      , dropRef st *> resolve (getMX $ domainName st) str st.process
+                                      ]
 foldp (Inbound x) st = case x of
-    Remote (Left strs) -> onlyEffects st [ pure $ Just $ Resolve $ Error strs ]
-    Remote (Right resp) -> onlyEffects st [ pure $ Just $ Resolve $ Update resp
-                                          , dropRef st
-                                          ]
-    FollowUp (Left strs) -> onlyEffects st [ pure $ Just $ Resolve $ Error strs ]
-    FollowUp (Right rawd) -> onlyEffects st [ pure $ Just $ Resolve $ MXUpdate rawd
-                                            , dropRef st
-                                            ,  repester st rawd
+    ReDomain (Left strs)  -> onlyEffects st [ pure $ Just $ Resolve $ Error strs ]
+    ReDomain (Right resp) -> onlyEffects st [ dropRef st *> (pure $ Just $ Resolve $ Update resp) ]
+    ReMxHost (Left strs)  -> onlyEffects st [ pure $ Just $ Resolve $ Error strs ]
+    ReMxHost (Right rawd) -> onlyEffects st [ pure $ Just $ Resolve $ MXUpdate rawd
+                                            , dropRef st *> repester st rawd
                                             ]
-foldp (Anticipation x) st = case x of
-    Await str     -> noEffects $ st { waiting = true }
-    Listening str -> noEffects $ listen st str
+foldp (Pending x) st = case x of
+    DomainWait str     -> noEffects $ st { waiting = true }
+    MXHostWait str -> noEffects $ listen st str
 foldp (Resolve x) st = case x of
     Cancelled -> noEffects $ st { waiting = false }
-    Cleared  -> onlyEffects st [ resolve getHost st.inp st.trigger
-                               , pure $ Just $ Anticipation $ Await st.inp
-                               ]
     Error strs -> noEffects $ st { err = strs<>st.err, waiting = false }
     MXUpdate rawd -> noEffects $ st { resp = expound rawd <$> st.resp, queue = complete rawd st.queue }
     Update resp -> let st' = update resp st
-                    in { state: st' , effects: [ pure $ (Reflex <<< Pester <<< _.head) <$> L.uncons st'.queue ] }
+                    in { state: st' , effects: [ pure $ (Outbound <<< MXHostQuery <<< _.head) <$> L.uncons st'.queue ] }
 
 main :: Eff (CoreEffects AppEffects) Unit
 main = do
